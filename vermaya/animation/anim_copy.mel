@@ -1,0 +1,1341 @@
+/*All Rights Reserved @ 2008 by Sin L.
+Animation Copy tool version 3.0
+Written by Sin Loh, jcsin@hotmail.com, 2008
+<<--Description-->>
+"Animation Copy" tools allow Maya users to record poses, animations in text files.
+Pose and Animations are stored in *.pose and *.anm format respectively. 
+Users can open the file with notepad and edit the key data.
+The script copying and pasting the animation keys based on the NAME of the nodes.
+Namespace is supported. Option box  must be checked.
+
+What's new in Version 3.0
+1) support Namespace, tick the "Target has Namespace" checkbox if targets nodes have "Namespace"
+2) Batch Transfer has been removed/separated to independent tool
+3) able to copy pose and animation based on SELECTED nodes only.
+4) fixed memory leaking issue caused by undo history
+
+<<--Known bugs-->>
+1) if Maya scene has nodes with duplicated names, this will create node names with "pipe" like xyx|abc, 
+which resulting script errors.
+ 
+solution: Find the duplicated node names and rename them uniquely.
+
+2) If Maya scene contains nodes like "unknown". delete the "unknown" node would fix the problem.
+You can use this script to fix the problem--> delete `ls -type "unknown"`;
+
+Please feel free to give me feedbacks and questions to my email, jcsin@hotmail.com
+*/
+
+global string $anmPoseUserPref = "anmPose_userPrefs.mel"; //the name of pref. mel file is editable here.
+global string $anmPoseFileName;
+$anmPoseFileName =( `internalVar -userPrefDir` + $anmPoseUserPref ); //this is the userpref directory + filename
+
+global string $beamAnimatefilePath;
+$beamAnimatefilePath = `internalVar -userPrefDir`;
+global string $beamAnimatefileName;
+$beamAnimatefileName = "animation";
+//Check the status of "anmPose_userPrefs.mel", if the file doesn't exist, create one.
+global proc checkAnmPrefstatus()
+{
+	global string $anmPoseFileName; 
+	int $filestatus = `filetest -f $anmPoseFileName`;
+	if ($filestatus == 0)
+	{
+	$fileId=`fopen $anmPoseFileName`;
+	fclose $fileId;
+	}
+}
+	
+	
+//procedure for keeping the user's directory path in the tool, fprinted in the anmPose_userPrefs.mel
+//the path info will be kept in the tool after window is closed
+global proc sin_setAsDefaultDir()
+{
+    global string $anmPoseUserPref;
+    global string $anmPoseFileName;
+    global string $beamAnimatefilePath;
+    //string $dirText = `textField -q -text as_savedirTF`;
+    string $dirText = $beamAnimatefilePath;
+    int $filestatus = `filetest -f $anmPoseFileName`;
+    if ($filestatus == 1) 
+    {
+    $fileId=`fopen $anmPoseFileName "w"`;
+    fprint $fileId $dirText;
+    fclose $fileId;
+    } else
+        {
+        $fileId=`fopen $anmPoseFileName "w"`;
+        fprint $fileId $dirText;
+        fclose $fileId;
+        }
+}
+ 	
+//read user's directory path in the userpref.mel
+global proc sin_readAnmPose_userPrefs()
+{
+    global string $anmPoseUserPref;	
+    global string $anmPoseFileName;
+
+    int $filetest = `filetest -f $anmPoseFileName`;
+    if ($filetest == 1)
+        {
+            $fileId=`fopen $anmPoseFileName "r"`;
+            while ( !`feof $fileId` ) {
+                string $nextWord = `fgetword $fileId`;
+                if ( size( $nextWord ) > 0 ) {
+                    textField -e -text $nextWord as_savedirTF;
+                    //print ( $nextWord + "\n" );
+                }
+            }
+            fclose $fileId; 
+        }
+}
+	
+	
+//this will be executed when Enter the textfield	
+global proc textFieldEnterCommand()
+{
+    sin_setAsDefaultDir;	
+    sin_readAnmPose_userPrefs;
+    as_populateDirFileProc;	
+}	
+	
+// return procedure to find all nodes with keys
+global proc string [] ac_findNodesWithKeysProc()
+
+{
+	//This will return nodes and their attributes
+	string $returnAllKeyNodes[];
+	
+	string $finalNodes[]; 
+	
+	int $inclcamCBstate = `checkBox -q -v inclcamCB`;
+	int $inclcstCBstate = `checkBox -q -v inclcstCB`;
+	
+	if ($inclcamCBstate == 0 && $inclcstCBstate == 1 )
+	{
+	string $allNodes[] =`ls -type transform`;
+	string $lsCamerasRemoved[] =`listCameras`;
+   	$finalNodes = stringArrayRemove($lsCamerasRemoved, $allNodes);
+	}
+	if ($inclcamCBstate == 1 && $inclcstCBstate == 0 )
+	{
+	string $allNodes[] =`ls -type transform`;
+	string $lsConstraintRemoved[] =`ls -type constraint`;
+   	$finalNodes = stringArrayRemove($lsConstraintRemoved, $allNodes);
+	}
+	
+	if ($inclcamCBstate == 0 && $inclcstCBstate == 0 )
+	{
+	string $allNodes[] =`ls -type transform`;
+	string $lsConstraintRemoved[] =`ls -type constraint`;
+	string $lsCamerasRemoved[] =`listCameras`;
+   	string $NoConstraintNodes[] = stringArrayRemove($lsConstraintRemoved, $allNodes);
+	$finalNodes = stringArrayRemove($lsCamerasRemoved, $NoConstraintNodes);
+	}
+	
+	if ($inclcamCBstate == 1 && $inclcstCBstate == 1 )
+	{
+		$finalNodes =`ls -type transform`;
+
+	}
+			
+		for ($x=0; $x<size($finalNodes) ; $x++)
+            
+            {
+			int $allNodeKeysNum=`keyframe -q -keyframeCount $finalNodes[$x]`;
+			if ($allNodeKeysNum > 0)
+					{
+						string $attrOnly[] =`listAttr -k $finalNodes[$x]`;
+							
+                            for ($y=0; $y<size($attrOnly); $y++)
+							{
+                                string $nodesAttrs = $finalNodes[$x] + "." + $attrOnly[$y];
+									
+                                int $singleNodeKeysNum=`keyframe -q -keyframeCount $nodesAttrs`;
+                        
+                                if ($singleNodeKeysNum > 0)
+                                    {
+                                    $returnAllKeyNodes[size($returnAllKeyNodes)] = $nodesAttrs;
+                                    }
+							}
+					}
+			}
+	
+	return $returnAllKeyNodes;
+}
+
+//return procedure to find keys from selected nodes only.
+global proc string [] as_findSelectedNodesProc()
+
+{
+	string $returnSelectedNodes[];
+    string $allnode[] = `ls -sl`;
+    
+	for ($x=0; $x<size($allnode) ; $x++)
+		{
+			string $attrOnly[] =`listAttr -k $allnode[$x]`;
+			
+			for ($y=0; $y<size($attrOnly); $y++)
+			{
+				string $nodesAttrs = $allnode[$x] + "." + $attrOnly[$y];
+				int $allNodeKeysNum =`keyframe -q -keyframeCount $nodesAttrs`;
+				if ($allNodeKeysNum > 0)
+				{
+				$returnSelectedNodes[size($returnSelectedNodes)] = $nodesAttrs;
+				}							
+			}
+				
+		}
+	
+	return $returnSelectedNodes;
+
+}
+
+
+
+// Copy All or Only Selected Nodes that have animation keys
+global proc as_printToFileProc()
+{ 
+    sin_setAsDefaultDir;
+	
+    //Print all to file, with time range option available
+	global string $dirname;
+	global string $beamAnimatefilePath;
+	global string $beamAnimatefileName;
+	//$dirName =`textField -q -text as_savedirTF`;
+	$dirName = $beamAnimatefilePath;
+	//string $anmName =`textField -q -text as_AnmNameTF`;
+	global string $outputName;
+	string $anmName = $beamAnimatefileName;
+	$outputName = ($dirName + "/" + $anmName + ".anm");
+		
+		//After the error checking and confirm overwrite, the existing files will be deleted.
+		int $fileExist =`filetest -f $outputName`;
+		//print $fileExist;
+		if ($fileExist == 1) 
+			{										
+				sysFile -delete $outputName;
+			}	
+		
+	//choose either print all to file, or print only selected nodes to file
+	string $copyAttributesAll[];
+	int $checkCB = `checkBox -q -v copylistedCB`; //if only selected
+	if ($checkCB == 1)
+	{
+		$copyAttributesAll = as_findSelectedNodesProc();
+        //print $copyAttributesAll;
+		if (size($copyAttributesAll) < 1 )
+		{
+			error "Nothing is selected";
+		}
+		
+	} 
+		else
+	{		
+		$copyAttributesAll = ac_findNodesWithKeysProc(); //find all nodes with keys
+        
+	}
+    // Supress all messages caused by Undo
+    scriptEditorInfo -e -suppressErrors 1 -suppressWarnings 1 -suppressInfo 1 -suppressResults 1;	
+    
+    string $buffer[];	 	 	
+    string $finalNodes_no_namespace[];
+    int $progress;
+    global string $progressBar;
+    
+    for ($x=0; $x<size($copyAttributesAll); $x++ ) 
+        {
+            $progress = $x / float(size($copyAttributesAll))* 100;
+            //print $progress;
+            progressBar -edit -beginProgress -progress $progress $progressBar;
+            // Get rid of the namespace
+            $numTokens =`tokenize $copyAttributesAll[$x] ":" $buffer`;
+        
+            $finalNodes_no_namespace[size($finalNodes_no_namespace)] = $buffer[$numTokens -1];
+            
+            $fileId=`fopen $outputName`;
+            
+            fprint $fileId ("\n" + "nodeAttrType > ");
+            
+            //print nodes without namespace
+            fprint $fileId ($finalNodes_no_namespace[$x] + "\n");
+            
+            //This is the procedure to get animation keys and curve behaviors from desired time range... 
+            
+            int $copyTimeRangeRBState = `radioButton -q -sl timeRangeRB`;
+            int $minTime = `playbackOptions -q -minTime`;
+            int $maxTime = `playbackOptions -q -maxTime`;			
+            
+            string $timeRange = "";
+            if( $copyTimeRangeRBState == 1)
+            {
+                $timeRange = " -time (\"" + $minTime + ":" + $maxTime + "\") ";
+                
+                //In order to set a key at the first frame and last frame in the time range,
+                //and without sacrifice the curve behaviour, is by using copy keys with segment option.
+                
+                copyKey -time ($minTime + ":" + $maxTime) -float ($minTime + ":" + $maxTime) -option curve -hierarchy none -controlPoints 0 -shape 1 $copyAttributesAll[$x];
+                pasteKey -time $minTime -float $minTime -option merge -copies 1 -connect 0 -timeOffset 0 -floatOffset 0 -valueOffset 0 $copyAttributesAll[$x];
+
+            } else
+                
+            {	
+                //need to find the very first frame that have keys
+                selectKey -time ":" $copyAttributesAll; //need to select an object first
+                float $allKeys[3] = sort(`keyframe -q -sl`); //sort the time so we know the very first frame that have keys
+                //select -cl; // just to clear the selection
+                //print ("The first keyframe is at time " + $allKeys[0]);
+                //so I found the very first key occurs at frame $allKeys[0], then I set keys 
+                //on every attributes on that frame to avoid some curve getting keys not from the very start;
+                currentTime $allKeys[0];    //go to the first frame we found and setkey
+                setKeyframe $copyAttributesAll[$x] ;
+                
+            }
+            
+            float $keyframesAll[]= eval("keyframe" + $timeRange +  "-query -valueChange -timeChange " + $copyAttributesAll[$x]);
+                            
+            //float $keyframesAll[]= `keyframe $timeRange -query -valueChange -timeChange $copyAttributesAll[$x]`;
+            fprint $fileId ("keyframes > " );
+            
+            //this is to separate the float array above to be keyframes and the key values
+            for ($y=0, $z=1; $y<size($keyframesAll),$z<size($keyframesAll); $y += 2, $z +=2 )
+             
+            {
+                float $frames;
+                $frames = $keyframesAll[$y];
+                float $keyValues;
+                $keyValues = $keyframesAll[$z];
+                            
+                fprint $fileId ($frames + " " + $keyValues + " ") ;	
+            }
+        
+            //Now starting to get the curve behaviours etc.	
+                
+            //get weightedTangents
+            int $weightedTangentsAll[]= `keyTangent -q -weightedTangents $copyAttributesAll[$x]`;
+            fprint $fileId ("\n" + "weightedTangents > ");
+            fprint $fileId ($weightedTangentsAll[0] + " ");
+        
+            //Get lock
+            int $Lock[]= eval ("keyTangent" + $timeRange + "-q -lock " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "lock > ");
+            for ($each in $Lock)
+            {
+                fprint $fileId ($each + " ");
+            }
+            
+            //Get Weightlock
+            int $weightLock[]= eval ("keyTangent" + $timeRange + "-q -weightLock " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "weightLock > ");
+            for ($each in $weightLock)
+            {
+                fprint $fileId ($each + " ");
+            }
+            
+            //Get Curve inWeights		
+            float $inWeightAll[]=eval ("keyTangent" + $timeRange + "-q -inWeight " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "inWeight > ");
+            for ($a=0; $a<size($inWeightAll); $a++ )
+            {
+                fprint $fileId ($inWeightAll[$a] + " ");
+            }
+            
+            //Get Curve OutWeights			
+            float $outWeightAll[]=eval ("keyTangent" + $timeRange + "-q -outWeight " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "outWeight > ");
+            for ($b=0; $b<size($outWeightAll); $b++ )
+            {
+                fprint $fileId ($outWeightAll[$b] + " ");
+            }
+            
+            //Get Curve inAngle	
+            float $inAngleAll[]=eval ("keyTangent" + $timeRange + "-q -inAngle " + $copyAttributesAll[$x]);	
+            fprint $fileId ("\n" + "inAngle > ");
+            for ($c=0; $c<size($inAngleAll); $c++ )
+            {
+                fprint $fileId ($inAngleAll[$c] + " ");
+            }
+            
+            //Get Curve OutAngle		
+            float $outAngleAll[]=eval ("keyTangent" + $timeRange + "-q -outAngle " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "outAngle > ");
+            for ($d=0; $d<size($outAngleAll); $d++ )
+            {
+                fprint $fileId ($outAngleAll[$d] + " ");
+            }
+            
+            //Get Cruve inTangent										
+            string $inTangentTypeAll[] = eval ("keyTangent" + $timeRange + "-q -inTangentType " + $copyAttributesAll[$x]);
+            
+            fprint $fileId ("\n" + "inTangentType > ");
+            for ($y=0; $y<size($inTangentTypeAll); $y++ ) 
+            {
+                fprint $fileId ($inTangentTypeAll[$y] + " ");
+            }
+            
+            //Get Curve OutTangent
+            string $outTangentTypeAll[]= eval ("keyTangent" + $timeRange + "-q -outTangentType " + $copyAttributesAll[$x]);
+            fprint $fileId ("\n" + "outTangentType > ");
+            for ($z=0; $z<size($outTangentTypeAll); $z++ )
+            {
+             fprint $fileId ($outTangentTypeAll[$z] + " ");
+            }
+                    
+            // this is to undo the setKeyframe at the top.			
+            undo setKeyframes;
+			
+            flushUndo;
+                    
+            fclose $fileId;		                  
+        
+            //populate new filelist		
+            as_populateDirFileProc;	
+            textScrollList -e -si ($anmName + ".anm") as_AnmStoringTSL;
+
+    }
+    progressBar -edit -endProgress $progressBar;
+    scriptEditorInfo -e -clearHistory -suppressErrors 0 -suppressWarnings 0 -suppressInfo 0 -suppressResults 0;
+}
+
+
+//delete file confirmation window
+global proc as_deleteConfirmWinProc()
+
+{
+	string $outputTSL[] =`textScrollList -q -si as_AnmStoringTSL`;
+	if (size($outputTSL)>=1)
+    {
+        string $confirm =`confirmDialog 
+                        -title "Are you sure?" 
+                        -message ("Do you want to delete " + $outputTSL[0] + "\n" + "from the window system?")
+                        -button "Ok" -button "Cancel" -defaultButton "Ok"
+                        -cancelButton "Cancel" -dismissString "Cancel"`;
+        
+        if  ($confirm == "Ok")
+        {
+            as_delSelectedTSLFile;
+        }
+
+    }
+    else
+    {
+	 error "There is nothing to delete! \n";
+    }
+}
+
+//when select an item from textscrollist, it will appear the name at the textfield.
+global proc as_fillDirNameProc()
+{
+	string $buffer[];
+	string $selItem[] =`textScrollList -q -selectItem as_AnmStoringTSL`;
+	tokenize $selItem[0] "." $buffer;
+	textField -e -text $buffer[0] as_AnmNameTF;
+}
+
+global proc as_pickDirProc()
+{
+    string $folder[] = `fileDialog2 -fileMode 3 -caption "Choose a directory" -dialogStyle 2 -okCaption "Accept"`;
+    if (size($folder) != 0)
+    {
+        int $poseRBOnOff = `radioButton -q -sl poseRB`;
+        string $fileList[];
+        if ($poseRBOnOff == 1)
+        {
+        $fileList =`getFileList -folder ($folder[0] + "/") -filespec "*.pose"`;
+        } 
+        else
+        {
+        $fileList =`getFileList -folder ($folder[0] + "/") -filespec "*.anm"`;
+        
+        }
+        textScrollList -e -ra as_AnmStoringTSL;
+        for ($each in $fileList)
+            {
+                textScrollList -e -append $each as_AnmStoringTSL;
+            }
+
+        textField -e -text ($folder[0] + "/") as_savedirTF;
+
+        sin_setAsDefaultDir;//after pick the directory, the path will be recorded in usepref.mel
+    }
+    
+}
+
+//refresh the textscrollist.
+global proc as_populateDirFileProc()
+	
+{
+	string $dirName =`textField -q -text as_savedirTF`;
+	int $poseRBOnOff = `radioButton -q -sl poseRB`;
+	string $fileList[];
+	if ($poseRBOnOff == 1)
+	{
+		$fileList =`getFileList -fld ($dirName + "/") -filespec "*.pose"`;
+	}
+	else
+	{
+		$fileList =`getFileList -fld ($dirName + "/") -filespec "*.anm"`;
+	}
+			
+			textScrollList -e -ra as_AnmStoringTSL;
+			for ($each in $fileList)
+			{
+			textScrollList -e -append $each as_AnmStoringTSL;
+			}
+			
+			string $temp[] =`textScrollList -q -ai as_AnmStoringTSL`;
+			if (size($temp)>0)
+			{
+			textScrollList -e -sii 1 as_AnmStoringTSL;
+			}
+
+}
+
+
+
+////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+//Paste Animation procedures start here//////////////////
+////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+
+global proc float findExactKeyframe( float $firstKeyFrame, float $currentTime, float $keyFrame)
+{
+
+float $keyFrameSet;
+//This is to find the differences between the first keyframe and current time
+//so the script could find the exact offset values of the keyframes got pasted.
+//reason is negative and positive of the current time possibilities animators would choose
+
+int $frameDiff =  $firstKeyFrame - $currentTime;
+$frameDiff = abs ($frameDiff); //I just want to know the differences, no negative value needed
+
+if ($firstKeyFrame <= $currentTime) //reason is negative and positive current time possibilities animator would choose
+{
+	
+//if the current time value is equal or bigger than the keyFrame,then using "ADD", else use "Substract"
+$keyFrameSet = ($keyFrame + $frameDiff);
+	
+} else
+	{
+	$keyFrameSet = ($keyFrame - $frameDiff);	
+	}
+	
+	return $keyFrameSet;
+}
+
+
+global proc as_pasteAnmProc()
+{
+
+	string $dirName =`textField -q -text as_savedirTF`;
+	string $fileName[] =`textScrollList -q -si as_AnmStoringTSL`;
+	if (size($fileName)<1)	
+	{
+		error "Select an animation.";
+	}
+	
+	int $fileId=`fopen ($dirName + "/" + $fileName[0]) "r"`;
+	
+	float $currentTime =`currentTime -q`;
+	string $nodeAttrType[];
+    string $prefix;
+    string $prefixNode;
+	string $nodeName;
+	string $allKeyframes[];
+	string $weightedTangents[];
+	string $Lock[];
+	string $weightLock[];
+	string $inTangentType[];
+	string $outTangentType[];
+	string $inWeight[];
+	string $outWeight[];
+	string $inAngle[];
+	string $outAngle[];
+	float $keyFrame;
+	float $keyValue;
+	float $keyFrameSet;
+	float $firstKeyFrame;
+	if (`checkBox -q -v enableUndoCB` != 1)
+		undoInfo -state off;
+		
+ 	while (!`feof $fileId` ) 
+	{ 
+	 	$nextLine = `fgetline $fileId`;
+		
+		if (`checkBox -q -v usePrefixCB` == 1)
+		{
+    		string $prefix = `textField -q -text usePrefixTF`;
+            $prefixNode = $prefix + ":" ;
+		}
+        global string $progressBar;
+		if (size ($nextLine) > 0)
+		{
+            progressBar -edit -progress 5 $progressBar;
+            string $buffer[];
+			tokenize $nextLine ">" $buffer;
+			
+			if ( startsWith (strip($buffer[0]), "nodeAttrType") )
+			{				
+				tokenize (strip($buffer[1])) "." $nodeAttrType;
+				
+				if (`checkBox -q -v usePrefixCB` == 1)
+                {
+                    $nodeName = ($prefixNode + $nodeAttrType[0] + "." + $nodeAttrType[1]);                    
+                }
+                else
+                {                
+                    $nodeName = ($nodeAttrType[0] + "." + $nodeAttrType[1]);                    
+                }
+                
+			}			
+			
+			if ( startsWith (strip($buffer[0]), "keyframes") )
+			{				
+				tokenize (strip($buffer[1])) " " $allKeyframes;
+				if (`objExists $nodeName`)
+				{			
+					int $checkAttrKeyable = `getAttr -k $nodeName`;
+					int $checkAttrLock = `getAttr -l $nodeName`;
+					if ($checkAttrLock == 0 && $checkAttrKeyable == 1 )
+					{
+						 
+						$firstKeyFrame = float ($allKeyframes[0]); //find the first keyframe only.
+						
+						for ($x=0; $x <size($allKeyframes); $x = $x + 2)
+						{
+							$keyFrame = float ($allKeyframes[$x]);
+							$keyValue = float ($allKeyframes[$x+1]);
+							// Use findExactKeyframe()
+                            $keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;	//refer to above
+						
+							setKeyframe -t $keyFrameSet -v $keyValue -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+								
+						} 
+                        
+					}	else
+								{
+									print ($nodeName + " is locked or not keyable ." + "\n");
+								}
+							
+				}	else
+						{
+							print ($nodeName + " not found." + "\n");	
+						}
+
+			}
+			progressBar -edit -progress 15 $progressBar;			
+			if ( startsWith (strip($buffer[0]), "weightedTangents") )
+				
+			{
+				tokenize (strip($buffer[1])) " " $weightedTangents;
+				int $weightedTangentsInt = int ($weightedTangents[0]);
+				
+				if (`objExists $nodeName`)
+				{
+					keyTangent -weightedTangents $weightedTangentsInt -a -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+				}
+			
+			}
+			progressBar -edit -progress 25 $progressBar;
+			if ( startsWith (strip($buffer[0]), "lock") )
+				
+			{
+				tokenize (strip($buffer[1])) " " $Lock;
+				
+				for ($x=0, $y=0; $y <size($Lock), $x < size($allKeyframes) ; $x = $x + 2, $y ++ )
+				{
+					float $LockString;
+					$LockString = float ($Lock[$y]);
+					$keyFrame = float ($allKeyframes[$x]);
+										
+					$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+					
+					if (`objExists $nodeName`)
+					{
+						keyTangent -edit -time $keyFrameSet -attribute $nodeAttrType[1] -lock $LockString ($prefixNode+$nodeAttrType[0]);
+					}
+					
+				}
+				
+			}
+			
+			if ( startsWith (strip($buffer[0]), "weightLock")  )
+				
+			{
+					tokenize (strip($buffer[1])) " " $weightLock;
+					
+					for ($x=0, $y=0; $y <size($weightLock), $x < size($allKeyframes) ; $x = $x + 2, $y ++ )
+					{
+						float $weightLockString;
+						$weightLockString = float ($weightLock[$y]);
+					
+						$keyFrame = float ($allKeyframes[$x]);
+						$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+						
+						if (`objExists $nodeName`)
+						{
+							if ($weightLockString == 0 )
+							{
+								keyTangent -time $keyFrameSet -attribute $nodeAttrType[1] -weightLock $weightLockString ($prefixNode+$nodeAttrType[0]);
+							}
+						}
+					}
+				
+			}
+
+			progressBar -edit -progress 50 $progressBar;	
+			if (startsWith (strip($buffer[0]), "inWeight"))
+			{				
+				tokenize (strip($buffer[1])) " " $inWeight;
+			}			
+	
+			if (startsWith (strip($buffer[0]), "outWeight"))
+			{				
+				tokenize (strip($buffer[1])) " " $outWeight;
+			}
+			progressBar -edit -progress 75 $progressBar;					
+			if (startsWith (strip($buffer[0]), "inAngle"))
+			{				
+				tokenize (strip($buffer[1])) " " $inAngle;
+				if (`objExists $nodeName`)
+				{
+						for ($x=0, $y=0, $z=0; $x < size($allKeyframes), $y <size($inAngle), $z< size($inWeight) ; $x = $x + 2, $y ++, $z++ )
+						{
+							
+							$keyFrame = float ($allKeyframes[$x]);
+							
+							$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+							
+							float $inAngleString;
+							$inAngleString = float ($inAngle[$y]);
+							float $inWeightString;
+							$inWeightString = float ($inWeight[$z]);
+							
+							keyTangent -time $keyFrameSet -a -inAngle $inAngleString -inWeight $inWeightString -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+						}
+							
+				}
+						
+			}
+			
+			if (startsWith (strip($buffer[0]), "outAngle"))
+			{				
+				tokenize (strip($buffer[1])) " " $outAngle;
+				if (`objExists $nodeName`)
+				{
+						for ($x=0, $y=0, $z=0; $y <size($outAngle), $x < size($allKeyframes), $z<size($outWeight) ; $x = $x + 2, $y ++, $z++ )
+						{
+							float $outAngleString;
+							$outAngleString = float ($outAngle[$y]);
+							float $outWeightString;
+							$outWeightString = float ($outWeight[$z]);
+							
+							$keyFrame = float ($allKeyframes[$x]);
+							
+							$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+							
+							keyTangent -time $keyFrameSet  -a -outAngle $outAngleString -outWeight $outWeightString -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+						}
+				}
+			}
+			progressBar -edit -progress 85 $progressBar;
+			if (startsWith (strip($buffer[0]), "inTangentType"))
+			{				
+				tokenize (strip($buffer[1])) " " $inTangentType;
+				string $inTangentStrings[] = $inTangentType;
+				if (`objExists $nodeName`)
+				{
+						for ($x=0, $y=0; $x < size($allKeyframes), $y < size($inTangentStrings) ; $x = $x + 2, $y++)
+						{	
+						$keyFrame = float ($allKeyframes[$x]);
+						
+						$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+						
+						keyTangent -inTangentType $inTangentStrings[$y] -time $keyFrameSet -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+						}
+				}
+					
+			}
+	
+			if (startsWith (strip($buffer[0]), "outTangentType"))
+			{				
+				tokenize (strip($buffer[1])) " " $outTangentType;
+				string $outTangentStrings[] = $outTangentType;
+				if (`objExists $nodeName`)
+				{
+						for ($a=0, $b=0; $a < size($allKeyframes), $b < size($outTangentStrings) ; $a = $a + 2, $b++)
+						{	
+						$keyFrame = float ($allKeyframes[$a]);
+						
+						$keyFrameSet = `findExactKeyframe $firstKeyFrame $currentTime $keyFrame`;
+						
+						keyTangent -time $keyFrameSet -outTangentType $outTangentStrings[$b] -attribute $nodeAttrType[1] ($prefixNode+$nodeAttrType[0]);
+						}
+				}
+
+			}
+            progressBar -edit -progress 100 $progressBar;
+			
+		}
+	}
+	
+    undoInfo -state on;
+	fclose $fileId;
+}
+
+//proc to create a directory after user type in a path
+global proc as_checkingDirFilesProc()
+	
+{	
+    //This is file and directory checking.
+    //string $dirName =`textField -q -text as_savedirTF`;
+    //string $anmName =`textField -q -text as_AnmNameTF`;
+    global string $beamAnimatefilePath;
+    global string $beamAnimatefileName;
+    string $dirName = $beamAnimatefilePath;
+    string $anmName = $beamAnimatefileName;
+    
+    global string $outputName;
+    
+    //int $poseRBOnOff = `radioButton -q -sl poseRB`;
+    //if ($poseRBOnOff == 1)
+    //{
+    //    $outputName = ($dirName + "/" + $anmName + ".pose");
+    //} 
+    //else
+    //{
+        $outputName = ($dirName + "/" + $anmName + ".anm");
+    //}
+    
+    //Check if the pose name textfield is given a name.
+    if (size($anmName)<1)
+    {
+    error "Please type in only file name. No need extension.";
+    }
+    
+                int $textDirExist =`filetest -d $dirName`;
+                if ($textDirExist==0)
+                {
+                    as_createDirConfirmWinProc;
+                    //warning "Directory is not created.";
+                }
+                    else
+                    {
+                    //if file exists, it will popup a confirmation window or CopyPose rightaway.
+                        int $fileExist =`filetest -w $outputName`;		
+                        if ($fileExist == 1) 
+                            {
+                                as_overWriteOutputWinProc;
+                            }
+                                else
+                            {
+                                    //int $anmRBstate =`radioButton -q -sl anmRB`;
+                                   // if ($anmRBstate == 1)
+                                    //{
+                                        as_printToFileProc;
+                                    //}
+                            
+                                    //else
+                                   //     {
+                                    //    ps_printToFileProc;
+                                        
+                                     //   }
+                                }
+                                    
+                        }
+
+					
+								
+}
+
+//overwrite a file confirmation window
+global proc as_overWriteOutputWinProc()
+
+{
+	string $output =`textField -q -text as_AnmNameTF`;
+	string $confirm;
+	int $poseRBOnOff = `radioButton -q -sl poseRB`;
+	if ($poseRBOnOff == 1)
+	{
+	$confirm =`confirmDialog 
+						-title "Are you sure?" 
+						-message ("File name exists, overwrite " + $output + ".pose" + " ?")
+				 		-button "Ok" -button "Cancel" -defaultButton "Ok"
+				 		-cancelButton "Cancel" -dismissString "Cancel"`;
+	} else
+	{
+	$confirm =`confirmDialog 
+						-title "Are you sure?" 
+						-message ("File name exists, overwrite " + $output + ".anm" + " ?")
+				 		-button "Ok" -button "Cancel" -defaultButton "Ok"
+				 		-cancelButton "Cancel" -dismissString "Cancel"`;
+	}
+	
+		
+		if  ($confirm == "Ok")
+		{
+			int $anmRBstate =`radioButton -q -sl anmRB`;
+			if ($anmRBstate == 1)
+			{
+			as_printToFileProc;
+			} else
+				{
+				ps_printToFileProc;
+				}
+				
+		}
+
+}
+
+
+//double click the file will open with wordpad, provided that
+//the user has associated .pose .anm with Notepad etc
+global proc as_doubleClickOpenDataProc()
+{
+    string $dirName =`textField -q -text as_savedirTF`;
+    string $anmName[] =`textScrollList -q -si as_AnmStoringTSL`;
+    $outputName = ($dirName + "/" + $anmName[0]);
+    system("load " + $outputName );
+}
+
+
+//proc to delete a file in textscrollist, which remove the file from system too
+global proc as_delSelectedTSLFile()
+{
+	//This will delete the selected file from textscrollist
+	string $dirName =`textField -q -text as_savedirTF`;
+	string $file[] =`textScrollList -q -si as_AnmStoringTSL`;
+	string $output = ($dirName + "/" + $file[0]);
+	int $fileExist =`filetest -w $output`;	
+	if ($fileExist==1)
+	{
+	sysFile -del $output;
+
+	as_populateDirFileProc;
+	print ("\n" + $output + " is deleted.");
+	}
+	
+	else
+	{
+		error ("Unable to delete " + $output);
+	}
+
+}
+
+global proc as_createDirProc()
+	
+{
+	//This will create a new directory
+	string $dir =`textField -q -text as_savedirTF`;
+	sysFile -md $dir;
+	int $textDirExist =`filetest -d $dir`;
+			if ($textDirExist==1)
+			{
+				int $anmRBstate =`radioButton -q -sl anmRB`;
+				if ($anmRBstate == 1)
+				{
+				as_printToFileProc;
+				} 
+					else
+						{
+						ps_printToFileProc;
+						}
+			}
+		else
+		{
+		error "Create directory failed. Make sure you type in correct format i.e c:\XYZ ..";
+		}
+
+}
+
+//This is create directory popup confirmation window.
+global proc as_createDirConfirmWinProc()
+{
+		string $dir =`textField -q -text as_savedirTF`;
+		string $confirm =`confirmDialog 
+						-title "Create Directory?" 
+						-message ("Directory not exists, create " +  $dir + "\n" + "and proceed copying?")
+				 		-button "Ok" -button "Cancel" -defaultButton "Ok"
+				 		-cancelButton "Cancel" -dismissString "Cancel"`;
+		
+		if  ($confirm == "Ok")
+		{
+		as_createDirProc ;
+		}
+				
+}
+
+global proc copyPoseCommandProc()
+{
+	button -e -label "Copy Pose" -h 30 -w 120 -bgc 0.8 0.8 0.8 -c as_checkingDirFilesProc copyToFileButton;
+	//textField -edit -text $anmPoseuserDir -enterCommand as_populateDirFileProc as_savedirTF;
+	button -e -label "Paste Pose" -h 30 -w 130 -bgc 0.65 0.65 0.65 -c ps_pastePoseFromFile pasteToSceneButton;
+	//checkBox -e -label "Targets use Prefix" -changeCommand usePrefixProc usePrefixCB;
+	//textField -e -w 95 -en 0 usePrefixTF;
+	checkBox -e -en 0 -v 0 -label "incl. cameras" inclcamCB;
+	checkBox -e -en 0 -v 0 -label "incl. constraints" inclcstCB;
+	radioButton -e -vis 1 -en 0 -label "All" copyAllRB;
+ 	radioButton -e -vis 1 -en 0 -label "Time Slider" timeRangeRB;
+ 	//text -e -vis 0 chooseAFrameT;
+ 	//text -e -vis 0 timeRange2PasteT;
+	as_populateDirFileProc;
+}
+	
+global proc copyAnmCommandProc()
+{
+	button -e -label "Copy Animation" -h 30 -w 120 -bgc 0.8 0.8 0.8 -c as_checkingDirFilesProc copyToFileButton;
+	button -e -label "Paste Animation" -h 30 -w 130 -bgc 0.65 0.65 0.65 -c as_pasteAnmProc pasteToSceneButton;
+	checkBox -e -en 1 -label "incl. cameras" inclcamCB;
+	checkBox -e -en 1 -v 1 -label "incl. constraints" inclcstCB;
+	radioButton -e -vis 1 -en 1 -label "All" copyAllRB;
+ 	radioButton -e -vis 1 -en 1 -label "Time Slider" timeRangeRB;
+	as_populateDirFileProc;
+}
+
+global proc usePrefixProc()
+
+{  
+     if (`textField -q -en usePrefixTF` == 1)
+     {
+        textField -e -en 0 usePrefixTF; 
+     }   
+     else
+     {
+        textField -e -en 1 usePrefixTF; 
+     }
+}
+	
+//===================Pose Copy======================//
+//====Written by Sin Loh========jcsin@hotmail.com==========//
+//=====================Copy Pose====================//
+
+global proc ps_printToFileProc ()
+	
+{
+	sin_setAsDefaultDir;
+	int $checkCB = `checkBox -q -v copylistedCB`;	
+	string $allKeyNodes[];
+	if ($checkCB == 1)
+	{
+		$allKeyNodes = ps_findSelectedNodesProc();
+		if (size($allKeyNodes)<1)
+		{
+		error "Nothing is selected.";
+		}
+	} else
+	
+	{
+		//gets all nodes want to copy
+		$allKeyNodes = ps_findNodesWithKeysProc();
+	}
+		//check system directory
+		global string $dirname;
+		$dirName =`textField -q -text as_savedirTF`;
+		string $poseName =`textField -q -text as_AnmNameTF`;
+		
+		global string $outputName;
+		$outputName = ($dirName + "/" + $poseName + ".pose");
+		
+		//After the error checking and confirm, the exists file will be deleted.
+		int $fileExist =`filetest -f $outputName`;
+		print $fileExist;
+		if ($fileExist == 1) 
+			{										
+				sysFile -delete $outputName;
+			}	
+			
+					//Start printing to file
+					$fileId=`fopen $outputName`;
+					fprint $fileId "\n";
+					fclose $fileId;
+                    
+                    string $buffer[];
+                    string $finalNodes_no_namespace[];
+                    for ($i =0; $i <size($allKeyNodes); $i++)
+                        {
+                            $numTokens =`tokenize $allKeyNodes[$i] ":" $buffer`;
+                            $finalNodes_no_namespace[size($finalNodes_no_namespace)] = $buffer[$numTokens -1];
+                            
+                            $fileId=`fopen $outputName`;
+                            float $allKeyNodesValue = `getAttr $allKeyNodes[$i]`;
+                            string $nodesOutput = ($finalNodes_no_namespace[$i] + " , " + $allKeyNodesValue +  "\n");
+                            print $nodesOutput;
+                                        
+                            fprint $fileId $nodesOutput;
+                            fclose $fileId;
+                            
+                        }
+							//populate new filelist		
+							as_populateDirFileProc;
+							textScrollList -e -si ($poseName + ".pose") as_AnmStoringTSL;							
+							print ("Total Copied Nodes :" + `size($allKeyNodes)`);						
+}	
+
+
+	
+global proc string [] ps_findNodesWithKeysProc()
+
+{
+	//This will return nodes and thier attributes
+	string $returnAllKeyNodes[];
+	string $allnode[] =`ls -type transform`;
+	string $lsConstraintRemoved[] =`ls -type constraint`;
+	
+	string $allnode [] =stringArrayRemoveExact($lsConstraintRemoved, $allnode);
+			
+	for ($x=0; $x<size($allnode) ; $x++)
+		{
+		int $allNodeKeysNum=`keyframe -q -keyframeCount $allnode[$x]`;
+		if ($allNodeKeysNum > 0)
+				{
+					string $attrOnly[] =`listAttr -k $allnode[$x]`;
+						for ($y=0; $y<size($attrOnly); $y++)
+						{
+							
+							string $nodesAttrs =$allnode[$x] + "." + $attrOnly[$y];
+								
+									int $singleNodeKeysNum=`keyframe -q -keyframeCount $nodesAttrs`;
+							
+									if ($singleNodeKeysNum> 0)
+										{
+											$returnAllKeyNodes[size($returnAllKeyNodes)] = $nodesAttrs;
+										}
+														
+						}
+				
+				}
+				
+		}
+	
+	return $returnAllKeyNodes;
+
+}
+
+global proc string [] ps_findSelectedNodesProc()
+
+{
+	string $returnSelectedNodes[];
+    string $allnode[] = `ls -sl`;
+    /*This will return nodes and their attributes
+	string $returnSelectedNodes[];
+	string $allnode[] =`textScrollList -q -ai as_selectedNodeTSL`;*/
+
+	for ($x=0; $x<size($allnode) ; $x++)
+		{
+		string $attrOnly[] =`listAttr -k $allnode[$x]`;
+			for ($y=0; $y<size($attrOnly); $y++)
+				{
+							
+				string $nodesAttrs =$allnode[$x] + "." + $attrOnly[$y];
+				$returnSelectedNodes[size($returnSelectedNodes)] = $nodesAttrs;
+														
+				}
+				
+		}
+	
+	return $returnSelectedNodes;
+
+}
+
+
+
+//=======================Paste Pose================================//
+
+global proc ps_pastePoseFromFile()
+	
+{
+	
+    //Pasting the pose to Maya scene
+	string $dirName =`textField -q -text as_savedirTF`;
+	string $fileName[] =`textScrollList -q -si as_AnmStoringTSL`;
+	if (size($fileName)<1)
+	{
+		error "Select a pose.";
+	}
+	string $prefixNode;
+    // Check if namespace required
+	if (`checkBox -q -v usePrefixCB` == 1)
+		{
+    		string $prefix = `textField -q -text usePrefixTF`;
+            $prefixNode = $prefix + ":" ;
+		}
+        
+	$fileId=`fopen ($dirName + "/" + $fileName[0]) "r"`;
+	
+	if (`checkBox -q -v enableUndoCB` != 1)
+		undoInfo -state off;
+ 	
+	string $allKeyNodes[];
+		
+ 	while ( !`feof $fileId` ) 
+		{ 
+	 		string $nextLine = `fgetline $fileId`;
+			
+			if ( size( $nextLine ) > 0 )
+			{
+				$allKeyNodes[0] = $nextLine;
+				
+				if (size ($allKeyNodes[0]) > 1)
+				{
+					string $buffer[];
+					tokenize $allKeyNodes[0] "," $buffer;
+				
+					//tokenize to nodes and values;
+					string $getOnlyNodes = $prefixNode + $buffer[0];
+					float $getOnlyValues = float ($buffer[1]);
+					
+			//check if the attribute is setable by setAttr, and if object exists
+					
+					if (`objExists $getOnlyNodes`)
+					{
+						int $setableBoo = `getAttr -se $getOnlyNodes`;
+					
+						if ($setableBoo == 1)
+								{
+									setAttr $getOnlyNodes $getOnlyValues;
+									setKeyframe $getOnlyNodes;
+									print ("set " + $getOnlyNodes + " = " + $getOnlyValues + "\n");
+									
+								}
+					}
+				}
+			}
+		
+		}
+    fclose $fileId;
+    //scriptEditorInfo -se 0 -sw 0 -si 0 -sr 0;
+    print "Result: Processed.";
+    undoInfo -state on;
+}
+
+//===============================================================//	
+//===============================================================// 
+//====================== Animation Copy Window===================//	
+//===============================================================//	
+//===============================================================//	
+
+global proc sin_AnmCopyWindowProc()
+{
+
+    if (`window -exists my_AnmCopyWindow`)
+        {
+            deleteUI my_AnmCopyWindow;
+            windowPref -remove my_AnmCopyWindow;
+        }
+	
+    window -w 230 -h 350 -s true -maximizeButton 0 -t "Animation Copy" -le 900 my_AnmCopyWindow;	
+            
+    //string $anmCopytabs = `tabLayout -innerMarginWidth 1 -innerMarginHeight 5 -scrollable false -tabLabel`;
+    //string $child1 =`columnLayout -adj false`;
+        
+    columnLayout -adj false;
+        
+        separator -w 270 -h 3 -style "in";
+        separator -w 270 -h 3 -style "none";
+        
+        rowColumnLayout 
+                    -numberOfColumns 2 
+                    -columnAttach 1 "both" 20
+                    -columnWidth 1 135 
+                    -columnWidth 2 85;
+        
+            radioCollection PoseAnimationRBC;
+            radioButton -w 120 -sl -label "Animation" -onCommand copyAnmCommandProc anmRB;
+            radioButton -w 120 -label "Pose" -onCommand copyPoseCommandProc poseRB; 
+        setParent..;
+        
+        separator -w 270 -h 3 -style "in";
+        separator -w 270 -h 3 -style "none";
+        
+        rowColumnLayout 
+        -numberOfColumns 3
+        -columnAttach 1 "left" 5
+        -columnWidth 1 60 
+        -columnWidth 2 25 
+        -columnWidth 3 185;
+     
+        text -label "Saved Dir.";
+        button -bgc 0.8 0.8 0.8 -l ".." -c as_pickDirProc;
+        textField -enterCommand textFieldEnterCommand as_savedirTF;
+        setParent..;
+
+            rowColumnLayout 
+            -numberOfColumns 3 
+            -columnAttach 1 "left" 5
+            -columnWidth 1 85 
+            -columnWidth 2 185; 
+        
+            text -label "File Name :";
+            textField as_AnmNameTF;
+            
+            setParent..;
+        
+                separator -style "none";
+                                
+                        
+                    rowColumnLayout -nc 4 -cw 1 130 -cw 2 140;
+                
+                        frameLayout -mw 3 -mh 3 -lv false -bs "etchedOut";
+                            columnLayout -w 140 -adj false;
+                                
+                                radioCollection; 							
+                                radioButton -vis 1 -sl -en 1 -label "All" copyAllRB;
+                                radioButton -vis 1 -en 1 -label "Time Slider" timeRangeRB;
+                                separator -style "none";					
+                                button -label "Copy Animation" -h 30 -w 120 -bgc 0.8 0.8 0.8 -c as_checkingDirFilesProc copyToFileButton;
+                                separator -h 3 -style "none";
+                                checkBox -label "Selected Nodes Only" copylistedCB;
+                                separator -w 225 -h 3 -style "in";
+                                checkBox -en 1 -label "incl. cameras" inclcamCB;
+                                checkBox -en 1 -v 1 -label "incl. constraints" inclcstCB;
+                            setParent..;
+                        setParent..;
+                        
+                        frameLayout -mh 3 -mw 3 -h 94 -lv false -bs "etchedOut";
+                            columnLayout -w 135 -adj false;
+                                
+                                radioCollection;
+                                //text -vis 0 -l "Choose a frame in" chooseAFrameT;
+                                //text -vis 0 -label "time slider to paste" timeRange2PasteT;
+                                
+                                checkBox -label "Targets use Namespace" -changeCommand usePrefixProc usePrefixCB;
+								checkBox -label "Undo after Paste" -v 0 enableUndoCB;
+                                textField -w 130 -en 0 usePrefixTF;
+                                button -label "Paste Animation" -h 30 -w 130 -bgc 0.65 0.65 0.65 -c as_pasteAnmProc pasteToSceneButton;
+                                separator -h 5 -style "none";
+                                separator -w 130 -style "in";
+                                separator -style "none";
+                                button -label "Delete" -h 30 -w 130 -bgc 0.471 0 0 -c as_deleteConfirmWinProc;
+                            setParent..;
+                        setParent..;
+                                                        
+                setParent..;
+
+                separator -h 3 -style "none";
+            
+                textScrollList -h 180 -w 270 -selectCommand as_fillDirNameProc -doubleClickCommand as_doubleClickOpenDataProc as_AnmStoringTSL;
+                global string $progressBar;
+                progressBar -minValue 0 -maxValue 100 -width 270 $progressBar;
+                
+                separator -h 3 -style "none";
+
+                separator-h 3 -style "none";
+                    
+
+        
+        
+    setParent..;
+    setParent..;
+    setParent..;
+    setParent..;
+
+    showWindow my_AnmCopyWindow;
+    checkAnmPrefstatus;
+    sin_readAnmPose_userPrefs;
+    as_populateDirFileProc;
+}
+
+sin_AnmCopyWindowProc;
+window -e -visible false "my_AnmCopyWindow";
